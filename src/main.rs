@@ -3,6 +3,7 @@ mod utils;
 mod wii_remote;
 
 use std::{
+    ffi::CStr,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
@@ -11,7 +12,6 @@ use std::{
     time::SystemTime,
 };
 
-use anyhow::Context;
 use chrono::Local;
 use clap::{
     builder::BoolishValueParser, crate_authors, crate_description, crate_name, crate_version, Arg,
@@ -19,8 +19,13 @@ use clap::{
 };
 use env_logger::fmt::Formatter;
 use env_logger::Builder;
-use input::{event::EventTrait, Libinput};
-use lib_input::Interface;
+use input_sys::{
+    libinput_device_get_udev_device, libinput_dispatch, libinput_event_get_device,
+    libinput_get_event,
+};
+use input_sys::{libinput_udev_assign_seat, libinput_udev_create_context};
+use lib_input::INTERFACE;
+use libudev_sys::udev_device_get_syspath;
 use log::error;
 use log::info;
 use log::warn;
@@ -28,7 +33,6 @@ use log::LevelFilter;
 use log::Record;
 use std::io::Error;
 use std::io::Write;
-use utils::FormattedUnwrap;
 
 use log::debug;
 
@@ -101,11 +105,12 @@ fn main() {
 fn connect_and_poll(wii_remote: &Arc<Mutex<WiiRemote>>) {
     info!("Initializing libinput...");
 
-    let mut libinput = Libinput::new_with_udev(Interface);
-
-    libinput
-        .udev_assign_seat("seat0")
-        .expect("Failed to assign seat");
+    let libinput;
+    unsafe {
+        let udev = libudev_sys::udev_new();
+        libinput = libinput_udev_create_context(&INTERFACE, std::ptr::null_mut(), udev as *mut _);
+        libinput_udev_assign_seat(libinput, c"seat0".as_ptr());
+    }
 
     const MAX_RETRIES: u32 = 10;
     let mut retries = 0;
@@ -149,26 +154,32 @@ fn connect_and_poll(wii_remote: &Arc<Mutex<WiiRemote>>) {
             }
         };
 
-        loop {
-            libinput
-                .dispatch()
-                .context("libinput dispatch error")
-                .unwrap_or_fmt();
+        unsafe {
+            loop {
+                let ret = libinput_dispatch(libinput);
+                if ret != 0 {
+                    error!("Failed to dispatch libinput events: {}", ret);
+                    break;
+                }
 
-            for event in &mut libinput {
-                unsafe {
-                    let udev_device = event
-                        .device()
-                        .udev_device()
-                        .context("Failed to get udev device")
-                        .unwrap_or_fmt();
+                loop {
+                    let event = libinput_get_event(libinput);
+                    if event == std::ptr::null_mut() {
+                        break;
+                    }
 
-                    let udev_device_path = udev_device.devpath();
-                    if udev_device_path != wii_remote_udev_device_path.as_str() {
+                    let device = libinput_event_get_device(event);
+                    let udev_device = libinput_device_get_udev_device(device);
+                    let udev_device_path = udev_device_get_syspath(udev_device as *mut _);
+                    let udev_device_path_cstr = CStr::from_ptr(udev_device_path);
+                    if udev_device_path_cstr.to_str().unwrap()
+                        != wii_remote_udev_device_path.as_str()
+                    {
                         debug!(
                             "Ignoring event from unrelated device: {}",
-                            udev_device_path.to_str().unwrap()
+                            udev_device_path_cstr.to_str().unwrap()
                         );
+
                         continue;
                     }
 
