@@ -31,9 +31,8 @@ jobs:
           docker run --rm --platform linux/arm64 \
             -v $PWD:/workspace \
             -w /workspace \
-            rust:alpine \
+            rust:latest \
             sh -c "
-              apk add --no-cache musl-dev eudev eudev-dev libinput libinput-dev pkgconfig && \
               rustup target add aarch64-unknown-linux-musl && \
               cargo build --release --target aarch64-unknown-linux-musl
             "
