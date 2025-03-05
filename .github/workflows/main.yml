@@ -31,13 +31,14 @@ jobs:
           docker run --rm --platform linux/arm64 \
             -v $PWD:/workspace \
             -w /workspace \
-            rust:alpine \
+            rust:bullseye \
             sh -c "
-              apk add --no-cache musl-dev eudev eudev-dev libinput libinput-dev && \
-              rustup target add aarch64-unknown-linux-musl && \
-              cargo build --release --target aarch64-unknown-linux-musl
+              apt-get update && \
+              apt-get install -y gcc-aarch64-linux-gnu libinput-dev && \
+              rustup target add aarch64-unknown-linux-gnu && \
+              export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc && \
+              cargo build --release --target aarch64-unknown-linux-gnu
             "
-
       - name: Upload binary as artifact
         uses: actions/upload-artifact@v4
         with:
