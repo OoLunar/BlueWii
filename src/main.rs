@@ -1,9 +1,8 @@
-mod udev_device_extensions;
+mod lib_input;
 mod utils;
 mod wii_remote;
 
 use std::{
-    ffi::CStr,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
@@ -12,6 +11,7 @@ use std::{
     time::SystemTime,
 };
 
+use anyhow::Context;
 use chrono::Local;
 use clap::{
     builder::BoolishValueParser, crate_authors, crate_description, crate_name, crate_version, Arg,
@@ -19,6 +19,8 @@ use clap::{
 };
 use env_logger::fmt::Formatter;
 use env_logger::Builder;
+use input::{event::EventTrait, Libinput};
+use lib_input::Interface;
 use log::error;
 use log::info;
 use log::warn;
@@ -26,17 +28,10 @@ use log::LevelFilter;
 use log::Record;
 use std::io::Error;
 use std::io::Write;
+use utils::FormattedUnwrap;
 
-use colpetto::{event::AsRawEvent, Libinput};
-use devil::sys::udev_device_get_devpath;
 use log::debug;
-use rustix::{
-    fd::{FromRawFd, IntoRawFd, OwnedFd},
-    fs::{open, Mode, OFlags},
-    io::Errno,
-};
 
-use udev_device_extensions::PubDevice;
 use wii_remote::WiiRemote;
 
 static CURRENT_TIME: AtomicU64 = AtomicU64::new(0);
@@ -46,7 +41,7 @@ fn main() {
     let matches = Command::new(crate_name!())
         .about(crate_description!())
         .author(crate_authors!(", "))
-        .arg_required_else_help(true)
+        .arg_required_else_help(false)
         .args([
             Arg::new("bluetoothctl-path")
                 .short('b')
@@ -106,18 +101,10 @@ fn main() {
 fn connect_and_poll(wii_remote: &Arc<Mutex<WiiRemote>>) {
     info!("Initializing libinput...");
 
-    let mut libinput = Libinput::new(
-        |path, flags| {
-            open(path, OFlags::from_bits_retain(flags as u32), Mode::empty())
-                .map(IntoRawFd::into_raw_fd)
-                .map_err(Errno::raw_os_error)
-        },
-        |fd| drop(unsafe { OwnedFd::from_raw_fd(fd) }),
-    )
-    .expect("Failed to initialize libinput.");
+    let mut libinput = Libinput::new_with_udev(Interface);
 
     libinput
-        .udev_assign_seat(c"seat0")
+        .udev_assign_seat("seat0")
         .expect("Failed to assign seat");
 
     const MAX_RETRIES: u32 = 10;
@@ -163,45 +150,41 @@ fn connect_and_poll(wii_remote: &Arc<Mutex<WiiRemote>>) {
         };
 
         loop {
-            let Some(event) = libinput.get_event() else {
-                if let Err(err) = libinput.dispatch() {
-                    error!("libinput dispatch error: {:?}", err);
-                    break;
+            libinput
+                .dispatch()
+                .context("libinput dispatch error")
+                .unwrap_or_fmt();
+
+            for event in &mut libinput {
+                unsafe {
+                    let udev_device = event
+                        .device()
+                        .udev_device()
+                        .context("Failed to get udev device")
+                        .unwrap_or_fmt();
+
+                    let udev_device_path = udev_device.devpath();
+                    if udev_device_path != wii_remote_udev_device_path.as_str() {
+                        debug!(
+                            "Ignoring event from unrelated device: {}",
+                            udev_device_path.to_str().unwrap()
+                        );
+                        continue;
+                    }
+
+                    let current_time =
+                        match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+                            Ok(duration) => duration.as_secs(),
+                            Err(_) => {
+                                error!("System time error: clock went backwards");
+                                continue;
+                            }
+                        };
+
+                    CURRENT_TIME.store(current_time, Ordering::Relaxed);
+                    debug!("Updated current time: {}", current_time);
                 }
-                continue;
-            };
-
-            let udev_device = event
-                .device()
-                .udev_device()
-                .expect("Failed to get udev device");
-
-            let udev_device_path = match unsafe {
-                let udev_device_pub = PubDevice::new(udev_device);
-                CStr::from_ptr(udev_device_get_devpath(udev_device_pub.raw)).to_str()
-            } {
-                Ok(path) => path,
-                Err(_) => {
-                    error!("Invalid UTF-8 in udev device path");
-                    continue;
-                }
-            };
-
-            if udev_device_path != wii_remote_udev_device_path.as_str() {
-                debug!("Ignoring event from unrelated device: {}", udev_device_path);
-                continue;
             }
-
-            let current_time = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
-                Ok(duration) => duration.as_secs(),
-                Err(_) => {
-                    error!("System time error: clock went backwards");
-                    continue;
-                }
-            };
-
-            CURRENT_TIME.store(current_time, Ordering::Relaxed);
-            debug!("Updated current time: {}", current_time);
         }
     }
 }

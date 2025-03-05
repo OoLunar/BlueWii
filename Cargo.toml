@@ -1,19 +1,15 @@
 [package]
 name = "BlueWii"
+authors = ["Lunar Starstrum <lunar@forsaken-borders.net>"]
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-devil = "=0.0.7"
-colpetto = "0.5.1"
+input = "=0.9.1"
 log = "0.4.26"
 env_logger = "0.11.6"
 anyhow = "1.0.97"
 chrono = "0.4.40"
-
-[dependencies.rustix]
-version = "0.38.44"
-features = ["fs"]
 
 [dependencies.clap]
 version = "4.5.31"
