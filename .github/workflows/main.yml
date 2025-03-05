@@ -33,8 +33,8 @@ jobs:
             -w /workspace \
             rust:latest \
             sh -c "
-              apt-get update && \
-              apt-get install libudev-dev libinput10 && \
+              apt-get update -y && \
+              apt-get install -y libudev-dev libinput10 && \
               rustup target add aarch64-unknown-linux-gnu && \
               cargo build --release --target aarch64-unknown-linux-gnu
             "
